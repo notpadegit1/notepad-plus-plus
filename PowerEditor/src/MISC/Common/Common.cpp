@@ -22,11 +22,10 @@
 #include <locale>
 #include "StaticDialog.h"
 #include "CustomFileDialog.h"
-
 #include "FileInterface.h"
 #include "Common.h"
 #include "Utf8.h"
-#include <Parameters.h>
+#include "Parameters.h"
 #include "Buffer.h"
 
 using namespace std;
@@ -2002,3 +2001,54 @@ HANDLE createFileWaitSec(const wchar_t* filePath, DWORD accessParam, DWORD share
 
 	return data._hFile;
 }
+
+//----------------------------------------------------
+
+struct fopenParamResult
+{
+	std::wstring _filePath;
+	FILE* _pFile = nullptr;
+	bool _isNetworkFailure = true;
+	fopenParamResult(wstring filePath) : _filePath(filePath) {};
+};
+
+DWORD WINAPI fopenWorker(void* data)
+{
+	fopenParamResult* inAndOut = static_cast<fopenParamResult*>(data);
+	inAndOut->_pFile = _wfopen(inAndOut->_filePath.c_str(), L"rb");
+	inAndOut->_isNetworkFailure = false;
+	return ERROR_SUCCESS;
+};
+
+FILE* fopenWaitTimeout(const wchar_t* filePath, DWORD milliSec2wait, bool* isNetWorkProblem)
+{
+	fopenParamResult data(filePath);
+
+	HANDLE hThread = ::CreateThread(NULL, 0, fopenWorker, &data, 0, NULL);
+	if (!hThread)
+	{
+		return nullptr;
+	}
+
+	// wait for our worker thread to complete or terminate it when the required timeout has elapsed
+	DWORD dwWaitStatus = ::WaitForSingleObject(hThread, milliSec2wait == 0 ? DEFAULT_MILLISEC : milliSec2wait);
+	switch (dwWaitStatus)
+	{
+		case WAIT_OBJECT_0: // Ok, the state of our worker thread is signaled, so it finished itself in the timeout given		
+			// - nothing else to do here, except the thread handle closing later
+			break;
+
+		case WAIT_TIMEOUT: // the timeout interval elapsed, but the worker's state is still non-signaled
+		default: // any other dwWaitStatus is a BAD one here
+			// WAIT_FAILED or WAIT_ABANDONED
+			//::TerminateThread(hThread, dwWaitStatus); // TerminateThread makes zombie process remained in memory after quiting Notepad++
+			break;
+	}
+	CloseHandle(hThread);
+
+	if (isNetWorkProblem != nullptr)
+		*isNetWorkProblem = data._isNetworkFailure;
+
+	return data._pFile;
+}
+
